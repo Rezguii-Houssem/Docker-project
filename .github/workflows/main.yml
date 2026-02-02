@@ -1,0 +1,33 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ] # Only run when we push to the main branch
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest # This is a clean VM provided by GitHub
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linting Tools
+        run: |
+          pip install flake8
+          # A Senior always "lints" to catch syntax errors before building images
+          flake8 ./backend --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Backend Image (Dry Run)
+        run: |
+          docker build ./backend -t my-app-backend:test
