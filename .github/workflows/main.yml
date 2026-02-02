@@ -2,14 +2,19 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main" ] # Only run when we push to the main branch
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest # This is a clean VM provided by GitHub
+# REQUIRED for OIDC
+permissions:
+  id-token: write   # This allows the runner to request the OIDC token
+  contents: read    # This allows the runner to read your code
 
+jobs:
+  # Your original job for building and testing
+  build-and-test:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -22,7 +27,6 @@ jobs:
       - name: Install Linting Tools
         run: |
           pip install flake8
-          # A Senior always "lints" to catch syntax errors before building images
           flake8 ./backend --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Set up Docker Buildx
@@ -31,3 +35,34 @@ jobs:
       - name: Build Backend Image (Dry Run)
         run: |
           docker build ./backend -t my-app-backend:test
+
+  # NEW: A separate job to handle the ECR push
+  push-to-ecr:
+    runs-on: ubuntu-latest
+    # This job should ONLY run on pushes to main (not on pull requests)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # It depends on the first job completing successfully
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1 # Change to your region
+          role-session-name: GitHubActionsSession
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: my-backend-repo # Replace with your actual ECR repo name
+        run: |
+          docker build -t $ECR_REGISTRY/$REPOSITORY:latest ./backend
+          docker push $ECR_REGISTRY/$REPOSITORY:latest
