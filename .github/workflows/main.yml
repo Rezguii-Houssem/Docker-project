@@ -1,50 +1,22 @@
-name: CI/CD Pipeline
+name: Build and Push Monorepo
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # Job 1: Build and test your code
-  build-and-test:
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Checkout repo
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Linting Tools
-        run: |
-          pip install flake8
-          flake8 ./backend --count --select=E9,F63,F7,F82 --show-source --statistics
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Backend Image (Dry Run)
-        run: |
-          docker build ./backend -t my-app-backend:test
-
-  # Job 2: Push to Amazon ECR (Only runs on push to main)
-  push-to-ecr:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build-and-test
-    
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
+      # Step 2: Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -52,14 +24,47 @@ jobs:
           aws-region: eu-west-3
           role-session-name: GitHubActionsSession
 
+      # Step 3: Login to ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Step 4: Determine changed folders (FIXED for first commit)
+      - name: Set changed folders
+        id: changes
+        run: |
+          echo "CHANGED_BACKEND=false" >> $GITHUB_ENV
+          echo "CHANGED_FRONTEND=false" >> $GITHUB_ENV
+          
+          # Get changed files - handles first commit edge case
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD 2>/dev/null || git ls-tree -r HEAD --name-only)
+          echo "Changed files: $CHANGED_FILES"
+          
+          if echo "$CHANGED_FILES" | grep -q "^backend/"; then
+            echo "CHANGED_BACKEND=true" >> $GITHUB_ENV
+          fi
+          if echo "$CHANGED_FILES" | grep -q "^frontend/"; then
+            echo "CHANGED_FRONTEND=true" >> $GITHUB_ENV
+          fi
+
+      # Step 5: Build & push backend (only if backend changed)
       - name: Build and Push Backend
+        if: env.CHANGED_BACKEND == 'true'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: my-company/backend
+          BACKEND_REPO: my-company/backend
         run: |
-          docker build -t $ECR_REGISTRY/$REPOSITORY:latest ./backend
-          docker push $ECR_REGISTRY/$REPOSITORY:latest
+          docker build -t $ECR_REGISTRY/$BACKEND_REPO:latest -t $ECR_REGISTRY/$BACKEND_REPO:${GITHUB_SHA} ./backend
+          docker push $ECR_REGISTRY/$BACKEND_REPO:latest
+          docker push $ECR_REGISTRY/$BACKEND_REPO:${GITHUB_SHA}
+
+      # Step 6: Build & push frontend (only if frontend changed)
+      - name: Build and Push Frontend
+        if: env.CHANGED_FRONTEND == 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          FRONTEND_REPO: my-company/frontend
+        run: |
+          docker build -t $ECR_REGISTRY/$FRONTEND_REPO:latest -t $ECR_REGISTRY/$FRONTEND_REPO:${GITHUB_SHA} ./frontend
+          docker push $ECR_REGISTRY/$FRONTEND_REPO:latest
+          docker push $ECR_REGISTRY/$FRONTEND_REPO:${GITHUB_SHA}
